@@ -1,6 +1,9 @@
 import os
 import json
-from datetime import datetime, date
+import smtplib
+import threading
+from email.message import EmailMessage
+from datetime import datetime, date, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
@@ -23,6 +26,96 @@ def clean(doc):
         out["status"] = "active"
     out["id"] = str(doc["_id"])
     return out
+
+
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+MAIL_TO = os.environ.get("MAIL_TO", "")
+ALERT_DAYS = int(os.environ.get("ALERT_DAYS", "30"))
+
+DOC_AR = {"insurance_expiry": "التأمين",
+          "inspection_expiry": "الفحص الدوري",
+          "reg_expiry": "الاستمارة"}
+
+
+def collect_alerts(limit_days=None):
+    """Return list of (car, field, days_left) needing attention."""
+    if limit_days is None:
+        limit_days = ALERT_DAYS
+    today = date.today()
+    out = []
+    for doc in cars.find():
+        if doc.get("status") == "stored":
+            continue
+        for f in DOC_AR:
+            val = str(doc.get(f, "")).strip()
+            if not val:
+                continue
+            try:
+                d = datetime.strptime(val, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            n = (d - today).days
+            if n <= limit_days:
+                out.append((doc, f, n))
+    out.sort(key=lambda x: x[2])
+    return out
+
+
+def build_email_html(items):
+    today = date.today().strftime("%Y-%m-%d")
+    rows = []
+    for doc, f, n in items:
+        if n < 0:
+            state, col = "منتهية منذ %d يوم" % (-n), "#c0392b"
+        elif n == 0:
+            state, col = "تنتهي اليوم", "#c0392b"
+        else:
+            state, col = "متبقي %d يوم" % n, "#b7791f"
+        rows.append(
+            "<tr>"
+            "<td style='padding:8px;border-bottom:1px solid #eee'>%s %s</td>"
+            "<td style='padding:8px;border-bottom:1px solid #eee'><b>%s</b></td>"
+            "<td style='padding:8px;border-bottom:1px solid #eee'>%s</td>"
+            "<td style='padding:8px;border-bottom:1px solid #eee'>%s</td>"
+            "<td style='padding:8px;border-bottom:1px solid #eee;color:%s'><b>%s</b></td>"
+            "</tr>" % (doc.get("make", ""), doc.get("model", ""), doc.get("plate", ""),
+                       DOC_AR[f], doc.get(f, ""), col, state))
+    return (
+        "<div dir='rtl' style=\"font-family:Tahoma,Arial,sans-serif;color:#222\">"
+        "<h2 style='color:#c0392b'>تنبيه وثائق السيارات</h2>"
+        "<p>تقرير يوم %s — عدد الوثائق التي تحتاج متابعة: <b>%d</b></p>"
+        "<table style='border-collapse:collapse;width:100%%;font-size:14px'>"
+        "<tr style='background:#f4f4f4'>"
+        "<th style='padding:8px;text-align:right'>السيارة</th>"
+        "<th style='padding:8px;text-align:right'>اللوحة</th>"
+        "<th style='padding:8px;text-align:right'>الوثيقة</th>"
+        "<th style='padding:8px;text-align:right'>تاريخ الانتهاء</th>"
+        "<th style='padding:8px;text-align:right'>الحالة</th></tr>"
+        "%s</table>"
+        "<p style='margin-top:16px;font-size:13px;color:#666'>"
+        "أُرسل تلقائياً من نظام متابعة السيارات</p></div>"
+        % (today, len(items), "".join(rows)))
+
+
+def send_digest():
+    if not (SMTP_USER and SMTP_PASS and MAIL_TO):
+        return {"sent": False, "reason": "email not configured"}
+    items = collect_alerts()
+    if not items:
+        return {"sent": False, "reason": "nothing to report"}
+    msg = EmailMessage()
+    msg["Subject"] = "تنبيه وثائق السيارات — %d وثيقة تحتاج متابعة" % len(items)
+    msg["From"] = SMTP_USER
+    recipients = [a.strip() for a in MAIL_TO.replace(";", ",").split(",") if a.strip()]
+    msg["To"] = ", ".join(recipients)
+    msg.set_content("تقرير وثائق السيارات — افتح الرسالة بصيغة HTML.")
+    msg.add_alternative(build_email_html(items), subtype="html")
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as srv:
+        srv.starttls()
+        srv.login(SMTP_USER, SMTP_PASS)
+        srv.send_message(msg)
+    return {"sent": True, "count": len(items), "to": recipients}
 
 
 HTML = r"""<!DOCTYPE html>
@@ -55,6 +148,7 @@ button.danger{background:#7f1d1d;color:#fecaca}
 padding:9px 13px;margin-bottom:12px;display:none;align-items:center;gap:10px;font-size:13.5px}
 .banner.on{display:flex}
 .sechead{font-size:13px;color:var(--mut);margin:0 0 8px}
+
 .stat span{color:var(--mut);font-size:13px}
 .tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
 input,select{background:var(--card);border:1px solid var(--line);color:var(--txt);
@@ -88,6 +182,7 @@ width:100%;max-width:560px}
 <header>
   <h1 id="ttl"></h1>
   <button onclick="openForm()" class="primary" id="bAdd"></button>
+  <button onclick="testMail()" id="bMail"></button>
   <button onclick="toggleLang()" id="bLang"></button>
 </header>
 
@@ -126,6 +221,9 @@ const T = {
    dTitle:"ينتهي خلال 30 يوم",insurance:"التأمين",inspection:"الفحص الدوري",
    registration:"الاستمارة",carUnit:"سيارة",overdue:"منتهية",clear:"إلغاء التحديد",
    showing:"يعرض:",allGood:"لا يوجد شيء ينتهي قريباً ✅",
+   mail:"إرسال تجريبي",mailOk:n=>"تم إرسال الإيميل ("+n+" وثيقة)",
+   mailNo:"لا يوجد شيء يستدعي التنبيه حالياً",
+   mailCfg:"الإيميل غير مُعد في Render",mailErr:"فشل الإرسال: ",
    total:"السيارات النشطة",expired:"وثائق منتهية",due:"تنتهي خلال 30 يوم",valid:"سليمة",
    cols:{make:"النوع",model:"الموديل",year:"سنة الصنع",plate:"اللوحة",color:"اللون",
      serial:"الرقم التسلسلي",insurance_expiry:"انتهاء التأمين",
@@ -143,6 +241,9 @@ const T = {
    dTitle:"Expiring in 30 days",insurance:"Insurance",inspection:"Inspection",
    registration:"Registration",carUnit:"cars",overdue:"expired",clear:"Clear",
    showing:"Showing:",allGood:"Nothing expiring soon ✅",
+   mail:"Send test email",mailOk:n=>"Email sent ("+n+" documents)",
+   mailNo:"Nothing to report right now",
+   mailCfg:"Email not configured in Render",mailErr:"Send failed: ",
    total:"Active cars",expired:"Expired docs",due:"Due in 30 days",valid:"All valid",
    cols:{make:"Make",model:"Model",year:"Year",plate:"Plate",color:"Color",
      serial:"Serial No.",insurance_expiry:"Insurance",
@@ -179,6 +280,7 @@ function paint(){
  ttl.textContent=t().title;bAdd.textContent=t().add;bLang.textContent=t().lang;
  bSave.textContent=t().save;bCancel.textContent=t().cancel;
  dashTtl.textContent=t().dTitle;bClear.textContent=t().clear;
+ bMail.textContent=t().mail;
  q.placeholder=t().search;
  const fv=filt.value||'all';
  filt.innerHTML=['all','exp','soon','soon60','stored'].map(k=>
@@ -269,6 +371,17 @@ async function save(){
 }
 async function del(id){if(!confirm(t().confirm))return;
  await fetch("/api/cars/"+id,{method:"DELETE"});load();}
+async function testMail(){
+ bMail.disabled=true;const old=bMail.textContent;bMail.textContent="...";
+ try{const r=await (await fetch("/api/send-digest")).json();
+   if(r.sent)alert(t().mailOk(r.count));
+   else if(r.reason==="email not configured")alert(t().mailCfg);
+   else if(r.reason==="nothing to report")alert(t().mailNo);
+   else alert(t().mailErr+r.reason);
+ }catch(e){alert(t().mailErr+e);}
+ bMail.disabled=false;bMail.textContent=old;
+}
+
 async function load(){data=await (await fetch("/api/cars")).json();owners();render();}
 
 modal.addEventListener("click",e=>{if(e.target===modal)closeForm();});
@@ -295,7 +408,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
-        if path == "/api/cars":
+        if path in ("/api/send-digest", "/cron/daily"):
+            try:
+                res = send_digest()
+            except Exception as e:
+                res = {"sent": False, "reason": str(e)}
+            self._send(200, json.dumps(res, ensure_ascii=False))
+        elif path == "/api/cars":
             docs = [clean(d) for d in cars.find()]
             self._send(200, json.dumps(docs, ensure_ascii=False))
         elif path in ("/", "/index.html"):
