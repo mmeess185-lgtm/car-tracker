@@ -1,7 +1,8 @@
 import os
 import json
 import smtplib
-import threading
+import urllib.request
+import urllib.error
 from email.message import EmailMessage
 from datetime import datetime, date, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -31,6 +32,7 @@ def clean(doc):
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")
 MAIL_TO = os.environ.get("MAIL_TO", "")
+BREVO_KEY = os.environ.get("BREVO_KEY", "")
 ALERT_DAYS = int(os.environ.get("ALERT_DAYS", "30"))
 
 DOC_AR = {"insurance_expiry": "التأمين",
@@ -98,24 +100,73 @@ def build_email_html(items):
         % (today, len(items), "".join(rows)))
 
 
+def _recipients():
+    return [a.strip() for a in MAIL_TO.replace(";", ",").split(",") if a.strip()]
+
+
+def _send_via_brevo(subject, html, to_list):
+    payload = {
+        "sender": {"name": "Car Tracker", "email": SMTP_USER},
+        "to": [{"email": a} for a in to_list],
+        "subject": subject,
+        "htmlContent": html,
+    }
+    req = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"api-key": BREVO_KEY,
+                 "Content-Type": "application/json",
+                 "accept": "application/json"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            r.read()
+        return True, ""
+    except urllib.error.HTTPError as e:
+        return False, "Brevo %s: %s" % (e.code, e.read().decode("utf-8", "replace")[:300])
+    except Exception as e:
+        return False, str(e)
+
+
+def _send_via_smtp(subject, html, to_list):
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = SMTP_USER
+    msg["To"] = ", ".join(to_list)
+    msg.set_content("تقرير وثائق السيارات — افتح الرسالة بصيغة HTML.")
+    msg.add_alternative(html, subtype="html")
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as srv:
+            srv.starttls()
+            srv.login(SMTP_USER, SMTP_PASS)
+            srv.send_message(msg)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 def send_digest():
-    if not (SMTP_USER and SMTP_PASS and MAIL_TO):
+    to_list = _recipients()
+    if not (SMTP_USER and to_list):
+        return {"sent": False, "reason": "email not configured"}
+    if not (BREVO_KEY or SMTP_PASS):
         return {"sent": False, "reason": "email not configured"}
     items = collect_alerts()
     if not items:
         return {"sent": False, "reason": "nothing to report"}
-    msg = EmailMessage()
-    msg["Subject"] = "تنبيه وثائق السيارات — %d وثيقة تحتاج متابعة" % len(items)
-    msg["From"] = SMTP_USER
-    recipients = [a.strip() for a in MAIL_TO.replace(";", ",").split(",") if a.strip()]
-    msg["To"] = ", ".join(recipients)
-    msg.set_content("تقرير وثائق السيارات — افتح الرسالة بصيغة HTML.")
-    msg.add_alternative(build_email_html(items), subtype="html")
-    with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as srv:
-        srv.starttls()
-        srv.login(SMTP_USER, SMTP_PASS)
-        srv.send_message(msg)
-    return {"sent": True, "count": len(items), "to": recipients}
+    subject = "تنبيه وثائق السيارات — %d وثيقة تحتاج متابعة" % len(items)
+    html = build_email_html(items)
+
+    if BREVO_KEY:
+        ok, err = _send_via_brevo(subject, html, to_list)
+        if ok:
+            return {"sent": True, "count": len(items), "to": to_list, "via": "brevo"}
+        if not SMTP_PASS:
+            return {"sent": False, "reason": err}
+    ok, err = _send_via_smtp(subject, html, to_list)
+    if ok:
+        return {"sent": True, "count": len(items), "to": to_list, "via": "smtp"}
+    return {"sent": False, "reason": err}
 
 
 HTML = r"""<!DOCTYPE html>
