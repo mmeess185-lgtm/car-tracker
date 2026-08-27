@@ -25,8 +25,16 @@ def clean(doc):
     out = {f: doc.get(f, "") for f in FIELDS}
     if out["status"] not in ("active", "stored"):
         out["status"] = "active"
+    rens = doc.get("renewals") or []
+    rens = sorted(rens, key=lambda r: str(r.get("done", "")), reverse=True)
+    out["renewals"] = rens
     out["id"] = str(doc["_id"])
     return out
+
+
+DOC_FIELD = {"insurance": "insurance_expiry",
+             "inspection": "inspection_expiry",
+             "registration": "reg_expiry"}
 
 
 SMTP_USER = os.environ.get("SMTP_USER", "")
@@ -224,6 +232,9 @@ width:100%;max-width:560px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
 .fld label{display:block;font-size:12.5px;color:var(--mut);margin-bottom:5px}
 .fld input{width:100%}
+table.mini{width:100%;border-collapse:collapse;margin-bottom:14px;background:#172033;border-radius:8px;overflow:hidden}
+table.mini th,table.mini td{padding:6px 8px;font-size:12.5px;border-bottom:1px solid var(--line);text-align:start}
+table.mini th{color:var(--mut);font-weight:600}
 .row-actions{display:flex;gap:6px}
 .row-actions button{padding:5px 10px;font-size:12.5px}
 @media(max-width:600px){.grid{grid-template-columns:1fr}h1{font-size:16px}}
@@ -233,6 +244,7 @@ width:100%;max-width:560px}
 <header>
   <h1 id="ttl"></h1>
   <button onclick="openForm()" class="primary" id="bAdd"></button>
+  <button onclick="printAll()" id="bPrint"></button>
   <button onclick="testMail()" id="bMail"></button>
   <button onclick="toggleLang()" id="bLang"></button>
 </header>
@@ -252,10 +264,23 @@ width:100%;max-width:560px}
   <div class="tbl"><table><thead><tr id="head"></tr></thead><tbody id="body"></tbody></table></div>
 </div>
 
+<div class="modal" id="rmodal">
+  <div class="box" style="max-width:460px">
+    <h2 id="rTitle" style="margin:0;font-size:18px"></h2>
+    <p id="rCar" style="color:var(--mut);font-size:13.5px;margin:6px 0 0"></p>
+    <div class="grid" id="rGrid"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="closeRen()" id="rCancel"></button>
+      <button onclick="saveRen()" class="primary" id="rSave"></button>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="modal">
   <div class="box">
     <h2 id="fTitle" style="margin:0;font-size:18px"></h2>
     <div class="grid" id="formGrid"></div>
+    <div id="renBox"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button onclick="closeForm()" id="bCancel"></button>
       <button onclick="save()" class="primary" id="bSave"></button>
@@ -272,6 +297,13 @@ const T = {
    dTitle:"ينتهي خلال 30 يوم",insurance:"التأمين",inspection:"الفحص الدوري",
    registration:"الاستمارة",carUnit:"سيارة",overdue:"منتهية",clear:"إلغاء التحديد",
    showing:"يعرض:",allGood:"لا يوجد شيء ينتهي قريباً ✅",
+   renew:"تسجيل تجديد",renewTtl:"تسجيل عملية تجديد",docKind:"نوع الوثيقة",
+   doneDate:"تاريخ التجديد",newExp:"تاريخ الانتهاء الجديد",expiry:"تاريخ الانتهاء",amount:"المبلغ (ريال)",
+   note:"ملاحظة",log:"سجل التجديدات",noLog:"لا يوجد تجديدات مسجلة",
+   totalSpent:"إجمالي المصروف",sar:"ريال",print1:"طباعة",printAll:"طباعة التقرير",
+   repTtl:"تقرير السيارات",repCar:"تقرير سيارة",repDate:"تاريخ التقرير",
+   repCount:"عدد السيارات",carInfo:"بيانات السيارة",docs:"الوثائق",
+   grand:"إجمالي مصاريف التجديد",delRen:"حذف",confirmRen:"حذف هذه العملية؟",
    mail:"إرسال تجريبي",mailOk:n=>"تم إرسال الإيميل ("+n+" وثيقة)",
    mailNo:"لا يوجد شيء يستدعي التنبيه حالياً",
    mailCfg:"الإيميل غير مُعد في Render",mailErr:"فشل الإرسال: ",
@@ -292,6 +324,13 @@ const T = {
    dTitle:"Expiring in 30 days",insurance:"Insurance",inspection:"Inspection",
    registration:"Registration",carUnit:"cars",overdue:"expired",clear:"Clear",
    showing:"Showing:",allGood:"Nothing expiring soon ✅",
+   renew:"Log renewal",renewTtl:"Log a renewal",docKind:"Document",
+   doneDate:"Renewal date",newExp:"New expiry date",expiry:"Expiry date",amount:"Amount (SAR)",
+   note:"Note",log:"Renewal history",noLog:"No renewals logged",
+   totalSpent:"Total spent",sar:"SAR",print1:"Print",printAll:"Print report",
+   repTtl:"Fleet report",repCar:"Car report",repDate:"Report date",
+   repCount:"Cars",carInfo:"Car details",docs:"Documents",
+   grand:"Total renewal cost",delRen:"Delete",confirmRen:"Delete this entry?",
    mail:"Send test email",mailOk:n=>"Email sent ("+n+" documents)",
    mailNo:"Nothing to report right now",
    mailCfg:"Email not configured in Render",mailErr:"Send failed: ",
@@ -310,7 +349,7 @@ const F=["make","model","plate","year","color","serial","insurance_expiry","insp
 const FORMF=F.concat(["status"]);
 const DATES=["insurance_expiry","inspection_expiry","reg_expiry"];
 let lang=localStorage.getItem("lang")||"ar", data=[], editing=null, sortBy=null, sortDir=1;
-let focusDoc=null;
+let focusDoc=null, renFor=null, lastRows=[];
 const DOCLBL={insurance_expiry:"insurance",inspection_expiry:"inspection",reg_expiry:"registration"};
 const t=()=>T[lang];
 
@@ -331,7 +370,7 @@ function paint(){
  ttl.textContent=t().title;bAdd.textContent=t().add;bLang.textContent=t().lang;
  bSave.textContent=t().save;bCancel.textContent=t().cancel;
  dashTtl.textContent=t().dTitle;bClear.textContent=t().clear;
- bMail.textContent=t().mail;
+ bMail.textContent=t().mail;bPrint.textContent=t().printAll;
  q.placeholder=t().search;
  const fv=filt.value||'all';
  filt.innerHTML=['all','exp','soon','soon60','stored'].map(k=>
@@ -389,11 +428,15 @@ function render(){
    bannerTxt.textContent=t().showing+" "+t()[DOCLBL[focusDoc]];}
  else banner.classList.remove("on");
 
+ lastRows=rows;
  body.innerHTML=rows.length?rows.map(c=>'<tr>'+F.map(f=>
    '<td>'+(DATES.includes(f)?cell(c[f]):(c[f]||"—"))+
    (f==="make"&&c.status==="stored"?' <span class="pill n">'+t().storedNote+'</span>':'')+
    '</td>').join('')+
-   '<td><div class="row-actions"><button onclick="openForm(\''+c.id+'\')">'+t().edit+
+   '<td><div class="row-actions">'+
+   '<button onclick="openRen(\''+c.id+'\')">'+t().renew+'</button>'+
+   '<button onclick="printCar(\''+c.id+'\')">'+t().print1+'</button>'+
+   '<button onclick="openForm(\''+c.id+'\')">'+t().edit+
    '</button><button class="danger" onclick="del(\''+c.id+'\')">'+t().del+
    '</button></div></td></tr>').join(''):
    '<tr><td colspan="11" style="text-align:center;color:var(--mut);padding:26px">'+t().empty+'</td></tr>';
@@ -411,8 +454,55 @@ function openForm(id){
    '<option value="active"'+(st==="active"?" selected":"")+'>'+t().active+'</option>'+
    '<option value="stored"'+(st==="stored"?" selected":"")+'>'+t().storedOne+'</option>'+
    '</select></div>';
+ renBox.innerHTML=id?renTable(c):"";
  modal.classList.add("on");
 }
+function money(n){return (Number(n)||0).toLocaleString("en-US",{maximumFractionDigits:2});}
+
+function renTable(c){
+ const r=c.renewals||[];
+ if(!r.length)return '<p class="sechead">'+t().log+'</p><p style="color:var(--mut);font-size:13px">'+t().noLog+'</p>';
+ let tot=0;r.forEach(x=>tot+=Number(x.amount)||0);
+ return '<p class="sechead">'+t().log+'</p><table class="mini"><tr><th>'+t().doneDate+
+   '</th><th>'+t().docKind+'</th><th>'+t().newExp+'</th><th>'+t().amount+'</th><th>'+t().note+'</th><th></th></tr>'+
+   r.map((x,i)=>'<tr><td>'+(x.done||"—")+'</td><td>'+t()[x.kind]+'</td><td>'+(x.new_expiry||"—")+
+   '</td><td>'+money(x.amount)+'</td><td>'+(x.note||"—")+
+   '</td><td><button class="danger" style="padding:3px 8px;font-size:12px" onclick="delRen(\''+c.id+'\','+i+')">'+
+   t().delRen+'</button></td></tr>').join('')+
+   '<tr><td colspan="3"><b>'+t().totalSpent+'</b></td><td colspan="3"><b>'+money(tot)+' '+t().sar+'</b></td></tr></table>';
+}
+
+function openRen(id){
+ renFor=id;const c=data.find(x=>x.id===id);
+ rTitle.textContent=t().renewTtl;
+ rCar.textContent=(c.make||"")+" "+(c.model||"")+" — "+(c.plate||"");
+ const today=new Date().toISOString().slice(0,10);
+ rGrid.innerHTML=
+  '<div class="fld"><label>'+t().docKind+'</label><select id="r_kind" style="width:100%">'+
+  ['insurance','inspection','registration'].map(k=>'<option value="'+k+'">'+t()[k]+'</option>').join('')+
+  '</select></div>'+
+  '<div class="fld"><label>'+t().doneDate+'</label><input id="r_done" type="date" value="'+today+'"></div>'+
+  '<div class="fld"><label>'+t().newExp+'</label><input id="r_exp" type="date"></div>'+
+  '<div class="fld"><label>'+t().amount+'</label><input id="r_amt" type="number" min="0" step="any"></div>'+
+  '<div class="fld" style="grid-column:1/-1"><label>'+t().note+'</label><input id="r_note" type="text"></div>';
+ rSave.textContent=t().save;rCancel.textContent=t().cancel;
+ rmodal.classList.add("on");
+}
+function closeRen(){rmodal.classList.remove("on");renFor=null;}
+async function saveRen(){
+ const p={kind:r_kind.value,done:r_done.value,new_expiry:r_exp.value,
+   amount:r_amt.value,note:r_note.value.trim()};
+ await fetch("/api/cars/"+renFor+"/renew",{method:"POST",
+   headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+ closeRen();await load();
+}
+async function delRen(id,i){
+ if(!confirm(t().confirmRen))return;
+ await fetch("/api/cars/"+id+"/renew/"+i,{method:"DELETE"});
+ await load();
+ const c=data.find(x=>x.id===id);if(c&&modal.classList.contains("on"))renBox.innerHTML=renTable(c);
+}
+
 function closeForm(){modal.classList.remove("on");}
 async function save(){
  const p={};FORMF.forEach(f=>p[f]=document.getElementById("i_"+f).value.trim());
@@ -422,6 +512,74 @@ async function save(){
 }
 async function del(id){if(!confirm(t().confirm))return;
  await fetch("/api/cars/"+id,{method:"DELETE"});load();}
+function docRow(c,f){
+ const n=days(c[f]);
+ const lab=n===null?t().none:n<0?t().od(-n):n===0?t().today:t().d(n);
+ const col=n===null?"#777":n<0?"#c0392b":n<=30?"#b7791f":"#1e8449";
+ return '<tr><td>'+t()[DOCLBL[f]]+'</td><td>'+(c[f]||"—")+
+   '</td><td style="color:'+col+'"><b>'+lab+'</b></td></tr>';
+}
+
+function carBlock(c){
+ const r=c.renewals||[];let tot=0;r.forEach(x=>tot+=Number(x.amount)||0);
+ return '<div class="pc"><h3>'+(c.make||"")+' '+(c.model||"")+' — '+(c.plate||"")+'</h3>'+
+  '<table class="p"><tr><th>'+t().cols.year+'</th><td>'+(c.year||"—")+'</td>'+
+  '<th>'+t().cols.color+'</th><td>'+(c.color||"—")+'</td></tr>'+
+  '<tr><th>'+t().cols.serial+'</th><td>'+(c.serial||"—")+'</td>'+
+  '<th>'+t().cols.owner+'</th><td>'+(c.owner||"—")+'</td></tr>'+
+  '<tr><th>'+t().cols.status+'</th><td colspan="3">'+
+  (c.status==="stored"?t().storedOne:t().active)+'</td></tr></table>'+
+  '<table class="p"><tr><th>'+t().docs+'</th><th>'+t().expiry+'</th><th></th></tr>'+
+  DATES.map(f=>docRow(c,f)).join('')+'</table>'+
+  (r.length?'<table class="p"><tr><th>'+t().doneDate+'</th><th>'+t().docKind+
+   '</th><th>'+t().newExp+'</th><th>'+t().amount+'</th><th>'+t().note+'</th></tr>'+
+   r.map(x=>'<tr><td>'+(x.done||"—")+'</td><td>'+t()[x.kind]+'</td><td>'+
+   (x.new_expiry||"—")+'</td><td>'+money(x.amount)+'</td><td>'+(x.note||"—")+'</td></tr>').join('')+
+   '<tr><td colspan="3"><b>'+t().totalSpent+'</b></td><td colspan="2"><b>'+
+   money(tot)+' '+t().sar+'</b></td></tr></table>'
+   :'<p class="mut">'+t().noLog+'</p>')+'</div>';
+}
+
+function openPrint(title,sub,bodyHtml){
+ const w=window.open("","_blank");
+ if(!w){alert("Popup blocked");return;}
+ w.document.write('<!DOCTYPE html><html lang="'+lang+'" dir="'+t().dir+
+  '"><head><meta charset="utf-8"><title>'+title+'</title><style>'+
+  'body{font-family:Tahoma,Arial,sans-serif;color:#222;margin:24px}'+
+  'h1{font-size:20px;margin:0 0 4px}h3{font-size:15px;margin:0 0 8px;color:#1a5276}'+
+  '.sub{color:#666;font-size:13px;margin:0 0 18px}'+
+  'table.p{border-collapse:collapse;width:100%;font-size:13px;margin-bottom:10px}'+
+  'table.p th,table.p td{border:1px solid #ddd;padding:6px 8px;text-align:start}'+
+  'table.p th{background:#f4f4f4;font-weight:600}'+
+  '.pc{border:1px solid #ccc;border-radius:6px;padding:14px;margin-bottom:16px;page-break-inside:avoid}'+
+  '.mut{color:#888;font-size:13px}.tot{font-size:15px;margin-top:14px}'+
+  '@media print{button{display:none}}</style></head><body>'+
+  '<h1>'+title+'</h1><p class="sub">'+sub+'</p>'+bodyHtml+
+  '<button onclick="window.print()" style="padding:8px 16px;font-size:14px">'+
+  t().print1+'</button></body></html>');
+ w.document.close();
+}
+
+function printCar(id){
+ const c=data.find(x=>x.id===id);if(!c)return;
+ openPrint(t().repCar,t().repDate+": "+new Date().toISOString().slice(0,10),carBlock(c));
+}
+
+function printAll(){
+ const rows=lastRows;
+ if(!rows.length){alert(t().empty);return;}
+ let tot=0;rows.forEach(c=>(c.renewals||[]).forEach(x=>tot+=Number(x.amount)||0));
+ const bits=[];
+ if(own.value)bits.push(t().cols.owner+": "+own.value);
+ bits.push(t()[filt.value]);
+ if(focusDoc)bits.push(t()[DOCLBL[focusDoc]]);
+ if(q.value.trim())bits.push('"'+q.value.trim()+'"');
+ const sub=t().repDate+": "+new Date().toISOString().slice(0,10)+
+   " | "+t().repCount+": "+rows.length+" | "+bits.join(" · ");
+ openPrint(t().repTtl,sub,rows.map(carBlock).join('')+
+   '<p class="tot"><b>'+t().grand+": "+money(tot)+' '+t().sar+'</b></p>');
+}
+
 async function testMail(){
  bMail.disabled=true;const old=bMail.textContent;bMail.textContent="...";
  try{const r=await (await fetch("/api/send-digest")).json();
@@ -474,6 +632,33 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
+        parts = urlparse(self.path).path.strip("/").split("/")
+        # /api/cars/<id>/renew
+        if len(parts) == 4 and parts[1] == "cars" and parts[3] == "renew":
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            kind = str(body.get("kind", "")).strip()
+            if kind not in DOC_FIELD:
+                self._send(400, json.dumps({"error": "bad kind"}))
+                return
+            try:
+                amount = float(str(body.get("amount", "")).strip() or 0)
+            except ValueError:
+                amount = 0.0
+            entry = {
+                "kind": kind,
+                "done": str(body.get("done", "")).strip(),
+                "new_expiry": str(body.get("new_expiry", "")).strip(),
+                "amount": amount,
+                "note": str(body.get("note", "")).strip(),
+                "at": datetime.utcnow().isoformat(),
+            }
+            upd = {"$push": {"renewals": entry}}
+            if entry["new_expiry"]:
+                upd["$set"] = {DOC_FIELD[kind]: entry["new_expiry"]}
+            cars.update_one({"_id": ObjectId(parts[2])}, upd)
+            self._send(201, json.dumps({"ok": True}, ensure_ascii=False))
+            return
         if urlparse(self.path).path == "/api/cars":
             doc = self._payload()
             doc["created"] = datetime.utcnow().isoformat()
@@ -492,6 +677,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         parts = urlparse(self.path).path.strip("/").split("/")
+        if len(parts) == 5 and parts[1] == "cars" and parts[3] == "renew":
+            doc = cars.find_one({"_id": ObjectId(parts[2])})
+            rens = (doc or {}).get("renewals") or []
+            rens = sorted(rens, key=lambda r: str(r.get("done", "")), reverse=True)
+            try:
+                idx = int(parts[4])
+                target = rens[idx]
+            except (ValueError, IndexError):
+                self._send(400, json.dumps({"error": "bad index"}))
+                return
+            cars.update_one({"_id": ObjectId(parts[2])},
+                            {"$pull": {"renewals": {"at": target.get("at")}}})
+            self._send(200, json.dumps({"ok": True}))
+            return
         if len(parts) == 3 and parts[1] == "cars":
             cars.delete_one({"_id": ObjectId(parts[2])})
             self._send(200, json.dumps({"ok": True}))
