@@ -250,6 +250,8 @@ table.mini th{color:var(--mut);font-weight:600}
 </header>
 
 <div class="wrap">
+  <p class="sechead" id="fleetTtl"></p>
+  <div class="stats" id="fleet"></div>
   <p class="sechead" id="dashTtl"></p>
   <div class="stats" id="stats"></div>
   <div class="banner" id="banner">
@@ -294,7 +296,9 @@ const T = {
    search:"بحث بالنوع أو اللوحة أو الرقم التسلسلي...",
    all:"كل السيارات",exp:"منتهية",soon:"تنتهي خلال 30 يوم",soon60:"تنتهي خلال 60 يوم",
    stored:"السيارات المخزنة",allOwners:"كل الملاك",
-   dTitle:"ينتهي خلال 30 يوم",insurance:"التأمين",inspection:"الفحص الدوري",
+   dTitle:"ينتهي خلال 30 يوم",fleetTtl:"ملخص الأسطول",
+   allCars:"إجمالي السيارات",activeCars:"السيارات النشطة",
+   storedCars:"السيارات المخزنة",ownerCount:"عدد الملاك",insurance:"التأمين",inspection:"الفحص الدوري",
    registration:"الاستمارة",carUnit:"سيارة",overdue:"منتهية",clear:"إلغاء التحديد",
    showing:"يعرض:",allGood:"لا يوجد شيء ينتهي قريباً ✅",
    renew:"تسجيل تجديد",renewTtl:"تسجيل عملية تجديد",docKind:"نوع الوثيقة",
@@ -321,7 +325,9 @@ const T = {
    search:"Search by make, plate or serial...",
    all:"All cars",exp:"Expired",soon:"Expiring in 30 days",soon60:"Expiring in 60 days",
    stored:"Stored cars",allOwners:"All owners",
-   dTitle:"Expiring in 30 days",insurance:"Insurance",inspection:"Inspection",
+   dTitle:"Expiring in 30 days",fleetTtl:"Fleet summary",
+   allCars:"Total cars",activeCars:"Active cars",
+   storedCars:"Stored cars",ownerCount:"Owners",insurance:"Insurance",inspection:"Inspection",
    registration:"Registration",carUnit:"cars",overdue:"expired",clear:"Clear",
    showing:"Showing:",allGood:"Nothing expiring soon ✅",
    renew:"Log renewal",renewTtl:"Log a renewal",docKind:"Document",
@@ -369,7 +375,8 @@ function paint(){
  document.documentElement.lang=lang;document.documentElement.dir=t().dir;
  ttl.textContent=t().title;bAdd.textContent=t().add;bLang.textContent=t().lang;
  bSave.textContent=t().save;bCancel.textContent=t().cancel;
- dashTtl.textContent=t().dTitle;bClear.textContent=t().clear;
+ dashTtl.textContent=t().dTitle;fleetTtl.textContent=t().fleetTtl;
+ bClear.textContent=t().clear;
  bMail.textContent=t().mail;bPrint.textContent=t().printAll;
  q.placeholder=t().search;
  const fv=filt.value||'all';
@@ -413,7 +420,17 @@ function render(){
  else rows.sort((a,b)=>{const x=worst(a),y=worst(b);
    return (x===null?9e9:x)-(y===null?9e9:y);});
 
- const act=data.filter(c=>c.status!=="stored"&&(!ow||c.owner===ow));
+ const scope=ow?data.filter(c=>c.owner===ow):data;
+ const act=scope.filter(c=>c.status!=="stored");
+ const sto=scope.length-act.length;
+ const nOwners=new Set(data.map(c=>c.owner).filter(Boolean)).size;
+ fleet.innerHTML=[[t().allCars,scope.length,"var(--acc)"],
+   [t().activeCars,act.length,"var(--ok)"],
+   [t().storedCars,sto,"var(--mut)"],
+   [t().ownerCount,nOwners,"var(--acc)"]]
+   .map(x=>'<div class="stat"><b style="color:'+x[2]+'">'+x[1]+
+   '</b><span>'+x[0]+'</span></div>').join('');
+
  stats.innerHTML=DATES.map(f=>{
    let soon=0,od=0;
    act.forEach(c=>{const n=days(c[f]);if(n===null)return;
