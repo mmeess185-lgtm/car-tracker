@@ -15,6 +15,7 @@ MONGO_URI = os.environ.get("MONGO_URI", "")
 client = MongoClient(MONGO_URI)
 db = client["employee_tracker"]
 cars = db["cars"]
+plates = db["plates"]
 
 FIELDS = ["make", "model", "plate", "year", "color", "serial",
           "insurance_expiry", "inspection_expiry", "reg_expiry",
@@ -244,6 +245,7 @@ table.mini th{color:var(--mut);font-weight:600}
 <header>
   <h1 id="ttl"></h1>
   <button onclick="openForm()" class="primary" id="bAdd"></button>
+  <button onclick="openWallet()" id="bWallet"></button>
   <button onclick="printAll()" id="bPrint"></button>
   <button onclick="testMail()" id="bMail"></button>
   <button onclick="toggleLang()" id="bLang"></button>
@@ -254,6 +256,9 @@ table.mini th{color:var(--mut);font-weight:600}
   <div class="stats" id="fleet"></div>
   <p class="sechead" id="dashTtl"></p>
   <div class="stats" id="stats"></div>
+  <div class="banner" id="pbanner" style="border-color:var(--ok)">
+    <span id="pbannerTxt"></span>
+  </div>
   <div class="banner" id="banner">
     <span id="bannerTxt"></span>
     <button onclick="clearFocus()" id="bClear"></button>
@@ -264,6 +269,20 @@ table.mini th{color:var(--mut);font-weight:600}
     <select id="own" onchange="render()"></select>
   </div>
   <div class="tbl"><table><thead><tr id="head"></tr></thead><tbody id="body"></tbody></table></div>
+</div>
+
+<div class="modal" id="wmodal">
+  <div class="box" style="max-width:460px">
+    <h2 id="wTitle" style="margin:0 0 12px;font-size:18px"></h2>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <input id="wInput" style="flex:1">
+      <button onclick="addPlate()" class="primary" id="wAdd"></button>
+    </div>
+    <div id="wList"></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px">
+      <button onclick="closeWallet()" id="wClose"></button>
+    </div>
+  </div>
 </div>
 
 <div class="modal" id="rmodal">
@@ -301,6 +320,12 @@ const T = {
    storedCars:"السيارات المخزنة",ownerCount:"عدد الملاك",insurance:"التأمين",inspection:"الفحص الدوري",
    registration:"الاستمارة",carUnit:"سيارة",overdue:"منتهية",clear:"إلغاء التحديد",
    showing:"يعرض:",allGood:"لا يوجد شيء ينتهي قريباً ✅",
+   wallet:"محفظة اللوحات",walletTtl:"محفظة اللوحات الرقمية",
+   addPlate:"إضافة لوحة",platePH:"اكتب رقم اللوحة",
+   noPlates:"لا توجد لوحات مسجلة",dupPlate:"هذه اللوحة مسجلة مسبقاً",
+   plateOnCar:"هذه اللوحة مركّبة على سيارة",
+   found:"هذه اللوحة في محفظة اللوحات الرقمية — غير مركّبة على سيارة",
+   confirmPlate:"حذف هذه اللوحة من المحفظة؟",close:"إغلاق",
    renew:"تسجيل تجديد",renewTtl:"تسجيل عملية تجديد",docKind:"نوع الوثيقة",
    doneDate:"تاريخ التجديد",newExp:"تاريخ الانتهاء الجديد",expiry:"تاريخ الانتهاء",amount:"المبلغ (ريال)",
    note:"ملاحظة",log:"سجل التجديدات",noLog:"لا يوجد تجديدات مسجلة",
@@ -330,6 +355,12 @@ const T = {
    storedCars:"Stored cars",ownerCount:"Owners",insurance:"Insurance",inspection:"Inspection",
    registration:"Registration",carUnit:"cars",overdue:"expired",clear:"Clear",
    showing:"Showing:",allGood:"Nothing expiring soon ✅",
+   wallet:"Plate wallet",walletTtl:"Digital plate wallet",
+   addPlate:"Add plate",platePH:"Enter plate number",
+   noPlates:"No plates saved",dupPlate:"This plate is already saved",
+   plateOnCar:"This plate is already on a car",
+   found:"This plate is in the digital plate wallet — not on any car",
+   confirmPlate:"Remove this plate from the wallet?",close:"Close",
    renew:"Log renewal",renewTtl:"Log a renewal",docKind:"Document",
    doneDate:"Renewal date",newExp:"New expiry date",expiry:"Expiry date",amount:"Amount (SAR)",
    note:"Note",log:"Renewal history",noLog:"No renewals logged",
@@ -355,7 +386,7 @@ const F=["make","model","plate","year","color","serial","insurance_expiry","insp
 const FORMF=F.concat(["status"]);
 const DATES=["insurance_expiry","inspection_expiry","reg_expiry"];
 let lang=localStorage.getItem("lang")||"ar", data=[], editing=null, sortBy=null, sortDir=1;
-let focusDoc=null, renFor=null, lastRows=[];
+let focusDoc=null, renFor=null, lastRows=[], plates=[];
 const DOCLBL={insurance_expiry:"insurance",inspection_expiry:"inspection",reg_expiry:"registration"};
 const t=()=>T[lang];
 
@@ -378,6 +409,7 @@ function paint(){
  dashTtl.textContent=t().dTitle;fleetTtl.textContent=t().fleetTtl;
  bClear.textContent=t().clear;
  bMail.textContent=t().mail;bPrint.textContent=t().printAll;
+ bWallet.textContent=t().wallet;
  q.placeholder=t().search;
  const fv=filt.value||'all';
  filt.innerHTML=['all','exp','soon','soon60','stored'].map(k=>
@@ -444,6 +476,12 @@ function render(){
  if(focusDoc){banner.classList.add("on");
    bannerTxt.textContent=t().showing+" "+t()[DOCLBL[focusDoc]];}
  else banner.classList.remove("on");
+
+ const tq=norm(term);
+ const hit=tq?plates.filter(p=>norm(p.plate).includes(tq)):[];
+ if(hit.length){pbanner.classList.add("on");
+   pbannerTxt.textContent=hit.map(p=>p.plate).join("، ")+" — "+t().found;}
+ else pbanner.classList.remove("on");
 
  lastRows=rows;
  body.innerHTML=rows.length?rows.map(c=>'<tr>'+F.map(f=>
@@ -529,6 +567,43 @@ async function save(){
 }
 async function del(id){if(!confirm(t().confirm))return;
  await fetch("/api/cars/"+id,{method:"DELETE"});load();}
+function norm(s){return String(s||"").replace(/\s+/g," ").trim().toLowerCase();}
+
+async function loadPlates(){
+ try{plates=await (await fetch("/api/plates")).json();}catch(e){plates=[];}
+}
+
+function openWallet(){
+ wTitle.textContent=t().walletTtl;wAdd.textContent=t().addPlate;
+ wClose.textContent=t().close;wInput.placeholder=t().platePH;
+ wInput.value="";drawWallet();wmodal.classList.add("on");
+}
+function closeWallet(){wmodal.classList.remove("on");}
+
+function drawWallet(){
+ if(!plates.length){wList.innerHTML='<p style="color:var(--mut);font-size:13px">'+t().noPlates+'</p>';return;}
+ wList.innerHTML='<table class="mini">'+plates.map(p=>
+  '<tr><td style="font-size:14px">'+p.plate+'</td>'+
+  '<td style="text-align:end"><button class="danger" style="padding:3px 9px;font-size:12px" '+
+  'onclick="delPlate(\''+p.id+'\')">'+t().del+'</button></td></tr>').join('')+'</table>';
+}
+
+async function addPlate(){
+ const v=wInput.value.trim();if(!v)return;
+ const onCar=data.find(c=>norm(c.plate)===norm(v));
+ if(onCar){alert(t().plateOnCar+": "+onCar.make+" "+onCar.model);return;}
+ const r=await fetch("/api/plates",{method:"POST",
+   headers:{"Content-Type":"application/json"},body:JSON.stringify({plate:v})});
+ if(r.status===409){alert(t().dupPlate);return;}
+ wInput.value="";await loadPlates();drawWallet();render();
+}
+
+async function delPlate(id){
+ if(!confirm(t().confirmPlate))return;
+ await fetch("/api/plates/"+id,{method:"DELETE"});
+ await loadPlates();drawWallet();render();
+}
+
 function docRow(c,f){
  const n=days(c[f]);
  const lab=n===null?t().none:n<0?t().od(-n):n===0?t().today:t().d(n);
@@ -608,9 +683,13 @@ async function testMail(){
  bMail.disabled=false;bMail.textContent=old;
 }
 
-async function load(){data=await (await fetch("/api/cars")).json();owners();render();}
+async function load(){
+ data=await (await fetch("/api/cars")).json();
+ await loadPlates();owners();render();}
 
 modal.addEventListener("click",e=>{if(e.target===modal)closeForm();});
+wmodal.addEventListener("click",e=>{if(e.target===wmodal)closeWallet();});
+wInput.addEventListener("keydown",e=>{if(e.key==="Enter")addPlate();});
 paint();load();
 </script>
 </body>
@@ -640,6 +719,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 res = {"sent": False, "reason": str(e)}
             self._send(200, json.dumps(res, ensure_ascii=False))
+        elif path == "/api/plates":
+            docs = [{"id": str(d["_id"]), "plate": d.get("plate", "")}
+                    for d in plates.find()]
+            docs.sort(key=lambda x: x["plate"])
+            self._send(200, json.dumps(docs, ensure_ascii=False))
         elif path == "/api/cars":
             docs = [clean(d) for d in cars.find()]
             self._send(200, json.dumps(docs, ensure_ascii=False))
@@ -676,6 +760,19 @@ class Handler(BaseHTTPRequestHandler):
             cars.update_one({"_id": ObjectId(parts[2])}, upd)
             self._send(201, json.dumps({"ok": True}, ensure_ascii=False))
             return
+        if urlparse(self.path).path == "/api/plates":
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            p = " ".join(str(body.get("plate", "")).split())
+            if not p:
+                self._send(400, json.dumps({"error": "empty plate"}))
+                return
+            if plates.find_one({"plate": p}):
+                self._send(409, json.dumps({"error": "duplicate"}))
+                return
+            plates.insert_one({"plate": p, "created": datetime.utcnow().isoformat()})
+            self._send(201, json.dumps({"ok": True}))
+            return
         if urlparse(self.path).path == "/api/cars":
             doc = self._payload()
             doc["created"] = datetime.utcnow().isoformat()
@@ -706,6 +803,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             cars.update_one({"_id": ObjectId(parts[2])},
                             {"$pull": {"renewals": {"at": target.get("at")}}})
+            self._send(200, json.dumps({"ok": True}))
+            return
+        if len(parts) == 3 and parts[1] == "plates":
+            plates.delete_one({"_id": ObjectId(parts[2])})
             self._send(200, json.dumps({"ok": True}))
             return
         if len(parts) == 3 and parts[1] == "cars":
