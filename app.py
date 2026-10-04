@@ -38,10 +38,10 @@ DOC_FIELD = {"insurance": "insurance_expiry",
              "registration": "reg_expiry"}
 
 
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASS = os.environ.get("SMTP_PASS", "")
-MAIL_TO = os.environ.get("MAIL_TO", "")
-BREVO_KEY = os.environ.get("BREVO_KEY", "")
+SMTP_USER = os.environ.get("SMTP_USER", "").strip()
+SMTP_PASS = os.environ.get("SMTP_PASS", "").strip()
+MAIL_TO = os.environ.get("MAIL_TO", "").strip()
+BREVO_KEY = os.environ.get("BREVO_KEY", "").strip()
 ALERT_DAYS = int(os.environ.get("ALERT_DAYS", "30"))
 
 DOC_AR = {"insurance_expiry": "التأمين",
@@ -114,6 +114,7 @@ def _recipients():
 
 
 def _send_via_brevo(subject, html, to_list):
+    print("[email] trying Brevo, key length:", len(BREVO_KEY), flush=True)
     payload = {
         "sender": {"name": "Car Tracker", "email": SMTP_USER},
         "to": [{"email": a} for a in to_list],
@@ -132,9 +133,13 @@ def _send_via_brevo(subject, html, to_list):
             r.read()
         return True, ""
     except urllib.error.HTTPError as e:
-        return False, "Brevo %s: %s" % (e.code, e.read().decode("utf-8", "replace")[:300])
+        msg = "Brevo HTTP %s: %s" % (e.code, e.read().decode("utf-8", "replace")[:300])
+        print("[email]", msg, flush=True)
+        return False, msg
     except Exception as e:
-        return False, str(e)
+        msg = "Brevo connection error: %r" % (e,)
+        print("[email]", msg, flush=True)
+        return False, msg
 
 
 def _send_via_smtp(subject, html, to_list):
@@ -166,16 +171,20 @@ def send_digest():
     subject = "تنبيه وثائق السيارات — %d وثيقة تحتاج متابعة" % len(items)
     html = build_email_html(items)
 
+    brevo_err = "BREVO_KEY is empty" if not BREVO_KEY else None
     if BREVO_KEY:
-        ok, err = _send_via_brevo(subject, html, to_list)
+        ok, brevo_err = _send_via_brevo(subject, html, to_list)
         if ok:
             return {"sent": True, "count": len(items), "to": to_list, "via": "brevo"}
-        if not SMTP_PASS:
-            return {"sent": False, "reason": err}
-    ok, err = _send_via_smtp(subject, html, to_list)
+    if not SMTP_PASS:
+        return {"sent": False, "reason": "brevo failed: %s" % brevo_err}
+    ok, smtp_err = _send_via_smtp(subject, html, to_list)
     if ok:
         return {"sent": True, "count": len(items), "to": to_list, "via": "smtp"}
-    return {"sent": False, "reason": err}
+    return {"sent": False,
+            "reason": "brevo failed: %s | gmail failed: %s" % (brevo_err, smtp_err),
+            "brevo_error": brevo_err, "gmail_error": smtp_err,
+            "key_len": len(BREVO_KEY), "key_head": BREVO_KEY[:8]}
 
 
 HTML = r"""<!DOCTYPE html>
