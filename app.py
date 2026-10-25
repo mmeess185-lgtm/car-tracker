@@ -3,6 +3,7 @@ import json
 import smtplib
 import urllib.request
 import urllib.error
+import base64
 from email.message import EmailMessage
 from datetime import datetime, date, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -17,6 +18,10 @@ db = client["employee_tracker"]
 cars = db["cars"]
 plates = db["plates"]
 fines = db["fines"]
+photos = db["fine_photos"]
+
+MAX_PHOTO_BYTES = 2_000_000
+PHOTO_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 FINE_FIELDS = ["date", "car", "plate", "violation_no", "driver", "amount"]
 
@@ -24,6 +29,7 @@ FINE_FIELDS = ["date", "car", "plate", "violation_no", "driver", "amount"]
 def clean_fine(doc):
     out = {f: str(doc.get(f, "")) for f in FINE_FIELDS}
     out["id"] = str(doc["_id"])
+    out["photos"] = photos.count_documents({"fine_id": out["id"]})
     return out
 
 FIELDS = ["make", "model", "plate", "year", "color", "serial",
@@ -254,6 +260,16 @@ width:100%;max-width:560px}
 table.mini{width:100%;border-collapse:collapse;margin-bottom:14px;background:#172033;border-radius:8px;overflow:hidden}
 table.mini th,table.mini td{padding:6px 8px;font-size:12.5px;border-bottom:1px solid var(--line);text-align:start}
 table.mini th{color:var(--mut);font-weight:600}
+.thumbs{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.thumb{position:relative;width:86px;height:86px;border-radius:8px;overflow:hidden;
+border:1px solid var(--line);background:#0b1220}
+.thumb img{width:100%;height:100%;object-fit:cover;cursor:pointer;display:block}
+.thumb button{position:absolute;top:2px;inset-inline-end:2px;padding:1px 6px;font-size:11px;
+background:rgba(127,29,29,.9);color:#fecaca;border-radius:5px;line-height:1.5}
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.9);display:none;align-items:center;
+justify-content:center;z-index:40;padding:20px}
+.lightbox.on{display:flex}
+.lightbox img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px}
 .row-actions{display:flex;gap:6px}
 .row-actions button{padding:5px 10px;font-size:12.5px}
 @media(max-width:600px){.grid{grid-template-columns:1fr}h1{font-size:16px}}
@@ -306,6 +322,8 @@ table.mini th{color:var(--mut);font-weight:600}
   </div>
   <div class="tbl"><table><thead><tr id="fhead"></tr></thead><tbody id="fbody"></tbody></table></div>
 </div>
+
+<div class="lightbox" id="lbox" onclick="closeBox()"><img id="lboxImg" alt=""></div>
 
 <div class="modal" id="fmodal">
   <div class="box" style="max-width:520px">
@@ -367,6 +385,10 @@ const T = {
    storedCars:"السيارات المخزنة",ownerCount:"عدد الملاك",insurance:"التأمين",inspection:"الفحص الدوري",
    registration:"الاستمارة",carUnit:"سيارة",overdue:"منتهية",clear:"إلغاء التحديد",
    showing:"يعرض:",allGood:"لا يوجد شيء ينتهي قريباً ✅",
+   photos:"الصور",addPhoto:"إضافة صور",noPhotos:"لا توجد صور",
+   photoHint:"تُضغط الصور تلقائياً قبل الحفظ",uploading:"جاري الرفع...",
+   confirmPhoto:"حذف هذه الصورة؟",photoBig:"الصورة كبيرة جداً",
+   photoBad:"الملف ليس صورة",viewPhotos:"عرض الصور",savingFirst:"يتم حفظ المخالفة أولاً...",
    fines:"المخالفات",backCars:"السيارات",finesTtl:"سجل المخالفات المرورية",
    addFine:"+ إضافة مخالفة",newFine:"مخالفة جديدة",editFine:"تعديل المخالفة",
    fDate:"تاريخ المخالفة",fCar:"السيارة",fPlate:"اللوحة",fNo:"رقم المخالفة",
@@ -413,6 +435,10 @@ const T = {
    storedCars:"Stored cars",ownerCount:"Owners",insurance:"Insurance",inspection:"Inspection",
    registration:"Registration",carUnit:"cars",overdue:"expired",clear:"Clear",
    showing:"Showing:",allGood:"Nothing expiring soon ✅",
+   photos:"Photos",addPhoto:"Add photos",noPhotos:"No photos",
+   photoHint:"Photos are compressed automatically before saving",uploading:"Uploading...",
+   confirmPhoto:"Delete this photo?",photoBig:"Image too large",
+   photoBad:"Not an image file",viewPhotos:"View photos",savingFirst:"Saving the fine first...",
    fines:"Fines",backCars:"Cars",finesTtl:"Traffic fines history",
    addFine:"+ Add fine",newFine:"New fine",editFine:"Edit fine",
    fDate:"Fine date",fCar:"Car",fPlate:"Plate",fNo:"Violation no.",
@@ -489,7 +515,7 @@ function paint(){
  bView.textContent=view==="cars"?t().fines:t().backCars;
  ttl.textContent=view==="cars"?t().title:t().finesTtl;
  fhead.innerHTML=FCOLS.map(f=>'<th onclick="fsort(\''+f+'\')">'+t()[FLBL[f]]+
-   '</th>').join('')+'<th>'+t().cols.actions+'</th>';
+   '</th>').join('')+'<th>'+t().photos+'</th><th>'+t().cols.actions+'</th>';
  q.placeholder=t().search;
  const fv=filt.value||'all';
  filt.innerHTML=['all','exp','soon','soon60','stored'].map(k=>
@@ -821,11 +847,13 @@ function renderFines(){
    else if(f==="date")v='<span class="pill n">'+(x[f]||"—")+'</span>';
    else v=x[f]||"—";
    return '<td>'+v+'</td>';}).join('')+
+   '<td>'+(Number(x.photos)?'<button onclick="viewPhotos(\''+x.id+
+     '\')">📷 '+x.photos+'</button>':'<span style="color:var(--mut)">—</span>')+'</td>'+
    '<td><div class="row-actions">'+
    '<button onclick="openFine(\''+x.id+'\')">'+t().edit+'</button>'+
    '<button class="danger" onclick="delFine(\''+x.id+'\')">'+t().del+'</button>'+
    '</div></td></tr>').join(''):
-   '<tr><td colspan="7" style="text-align:center;color:var(--mut);padding:26px">'+
+   '<tr><td colspan="8" style="text-align:center;color:var(--mut);padding:26px">'+
    t().noFines+'</td></tr>';
 }
 
@@ -851,8 +879,16 @@ function openFine(id){
   '<div class="fld"><label>'+t().fDriver+'</label><input id="n_driver" type="text" value="'+
    (x.driver||"").replace(/"/g,"&quot;")+'"></div>'+
   '<div class="fld"><label>'+t().fAmount+'</label><input id="n_amount" type="number" min="0" step="any" value="'+
-   (x.amount||"")+'"></div>';
+   (x.amount||"")+'"></div>'+
+  '<div class="fld" style="grid-column:1/-1"><label>'+t().photos+
+   ' <span style="color:var(--mut)">— '+t().photoHint+'</span></label>'+
+   '<input id="n_files" type="file" accept="image/*" multiple onchange="addPhotos(this)">'+
+   '<span id="pStatus" style="font-size:12.5px;color:var(--warn)"></span>'+
+   '<div class="thumbs" id="pThumbs"></div></div>';
+ pendingPhotos=[];curPhotos=[];
  fmodal.classList.add("on");
+ drawThumbs();
+ if(id)loadPhotos(id).then(drawThumbs);
 }
 
 function pickCar(){
@@ -862,14 +898,28 @@ function pickCar(){
  n_plate.value=c.plate||"";
 }
 
-function closeFine(){fmodal.classList.remove("on");editingFine=null;}
+function closeFine(){fmodal.classList.remove("on");editingFine=null;
+ pendingPhotos=[];curPhotos=[];}
 
 async function saveFine(){
  const p={};FCOLS.forEach(f=>{const el=document.getElementById("n_"+f);
    if(el)p[f]=String(el.value||"").trim();});
- await fetch("/api/fines"+(editingFine?"/"+editingFine:""),
+ const r=await fetch("/api/fines"+(editingFine?"/"+editingFine:""),
    {method:editingFine?"PUT":"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify(p)});
+ if(!editingFine&&pendingPhotos.length){
+   let newId=null;
+   try{newId=(await r.json()).id;}catch(e){}
+   if(newId){
+     const el=document.getElementById("pStatus");
+     if(el)el.textContent=t().uploading;
+     for(const ph of pendingPhotos){
+       await fetch("/api/fines/"+newId+"/photos",{method:"POST",
+         headers:{"Content-Type":"application/json"},body:JSON.stringify(ph)});
+     }
+   }
+ }
+ pendingPhotos=[];curPhotos=[];
  closeFine();await loadFines();renderFines();
 }
 
@@ -896,6 +946,92 @@ function printFines(){
    '<tr><td colspan="5"><b>'+t().fTotal+'</b></td><td><b>'+money(tot)+' '+t().sar+'</b></td></tr>'+
    '</table>';
  openPrint(t().repFines,sub,body);
+}
+
+
+// ---------- photos ----------
+let pendingPhotos=[], curPhotos=[];
+
+function shrink(file){
+ return new Promise((res,rej)=>{
+  if(!file.type||!file.type.startsWith("image/")){rej(t().photoBad);return;}
+  const fr=new FileReader();
+  fr.onerror=()=>rej(t().photoBad);
+  fr.onload=()=>{
+    const img=new Image();
+    img.onerror=()=>rej(t().photoBad);
+    img.onload=()=>{
+      const MAX=1400;
+      let w=img.width,h=img.height;
+      if(w>MAX||h>MAX){const r=Math.min(MAX/w,MAX/h);w=Math.round(w*r);h=Math.round(h*r);}
+      const cv=document.createElement("canvas");cv.width=w;cv.height=h;
+      cv.getContext("2d").drawImage(img,0,0,w,h);
+      let q=0.72,out=cv.toDataURL("image/jpeg",q);
+      while(out.length>1800000&&q>0.35){q-=0.12;out=cv.toDataURL("image/jpeg",q);}
+      if(out.length>1800000){rej(t().photoBig);return;}
+      res(out);
+    };
+    img.src=fr.result;
+  };
+  fr.readAsDataURL(file);
+ });
+}
+
+async function addPhotos(input){
+ const files=[...(input.files||[])];
+ input.value="";
+ if(!files.length)return;
+ pStatus.textContent=t().uploading;
+ for(const f of files){
+   let data;
+   try{data=await shrink(f);}catch(e){alert(e);continue;}
+   if(editingFine){
+     await fetch("/api/fines/"+editingFine+"/photos",{method:"POST",
+       headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({data:data,name:f.name})});
+   } else {
+     pendingPhotos.push({data:data,name:f.name});
+   }
+ }
+ pStatus.textContent="";
+ if(editingFine)await loadPhotos(editingFine);
+ drawThumbs();
+}
+
+async function loadPhotos(id){
+ try{curPhotos=await (await fetch("/api/fines/"+id+"/photos")).json();}
+ catch(e){curPhotos=[];}
+}
+
+function drawThumbs(){
+ const saved=curPhotos.map(p=>
+   '<div class="thumb"><img src="/api/photo/'+p.id+'" onclick="openBox(\'/api/photo/'+p.id+'\')">'+
+   '<button onclick="delPhoto(\''+p.id+'\')">✕</button></div>');
+ const pend=pendingPhotos.map((p,i)=>
+   '<div class="thumb"><img src="'+p.data+'" onclick="openBox(this.src)">'+
+   '<button onclick="dropPending('+i+')">✕</button></div>');
+ const all=saved.concat(pend);
+ pThumbs.innerHTML=all.length?all.join(''):
+   '<span style="color:var(--mut);font-size:13px">'+t().noPhotos+'</span>';
+}
+
+function dropPending(i){pendingPhotos.splice(i,1);drawThumbs();}
+
+async function delPhoto(id){
+ if(!confirm(t().confirmPhoto))return;
+ await fetch("/api/photos/"+id,{method:"DELETE"});
+ if(editingFine)await loadPhotos(editingFine);
+ drawThumbs();await loadFines();renderFines();
+}
+
+function openBox(src){lboxImg.src=src;lbox.classList.add("on");}
+function closeBox(){lbox.classList.remove("on");lboxImg.src="";}
+
+async function viewPhotos(id){
+ editingFine=null;
+ const list=await (await fetch("/api/fines/"+id+"/photos")).json();
+ if(!list.length){alert(t().noPhotos);return;}
+ openBox("/api/photo/"+list[0].id);
 }
 
 async function testMail(){
@@ -954,6 +1090,25 @@ class Handler(BaseHTTPRequestHandler):
             docs = [clean_fine(d) for d in fines.find()]
             docs.sort(key=lambda x: x["date"], reverse=True)
             self._send(200, json.dumps(docs, ensure_ascii=False))
+        elif path.startswith("/api/fines/") and path.endswith("/photos"):
+            fid = path.split("/")[3]
+            out = [{"id": str(d["_id"]), "name": d.get("name", "")}
+                   for d in photos.find({"fine_id": fid})]
+            self._send(200, json.dumps(out, ensure_ascii=False))
+        elif path.startswith("/api/photo/"):
+            pid = path.split("/")[3]
+            try:
+                doc = photos.find_one({"_id": ObjectId(pid)})
+            except Exception:
+                doc = None
+            if not doc:
+                self._send(404, json.dumps({"error": "not found"}))
+                return
+            try:
+                raw = base64.b64decode(doc.get("b64", ""))
+            except Exception:
+                raw = b""
+            self._send(200, raw, doc.get("type", "image/jpeg"))
         elif path == "/api/plates":
             docs = [{"id": str(d["_id"]), "plate": d.get("plate", "")}
                     for d in plates.find()]
@@ -995,13 +1150,43 @@ class Handler(BaseHTTPRequestHandler):
             cars.update_one({"_id": ObjectId(parts[2])}, upd)
             self._send(201, json.dumps({"ok": True}, ensure_ascii=False))
             return
+        if len(parts) == 4 and parts[1] == "fines" and parts[3] == "photos":
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            data = str(body.get("data", ""))
+            if "," in data and data.startswith("data:"):
+                head, b64 = data.split(",", 1)
+                ctype = head[5:].split(";")[0] or "image/jpeg"
+            else:
+                b64, ctype = data, "image/jpeg"
+            if ctype not in PHOTO_TYPES:
+                self._send(400, json.dumps({"error": "unsupported type"}))
+                return
+            try:
+                raw = base64.b64decode(b64, validate=True)
+            except Exception:
+                self._send(400, json.dumps({"error": "bad image data"}))
+                return
+            if not raw or len(raw) > MAX_PHOTO_BYTES:
+                self._send(413, json.dumps({"error": "image too large"}))
+                return
+            photos.insert_one({
+                "fine_id": parts[2],
+                "name": str(body.get("name", ""))[:120],
+                "type": ctype,
+                "b64": base64.b64encode(raw).decode("ascii"),
+                "size": len(raw),
+                "created": datetime.utcnow().isoformat(),
+            })
+            self._send(201, json.dumps({"ok": True}))
+            return
         if urlparse(self.path).path == "/api/fines":
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
             doc = {f: str(body.get(f, "")).strip() for f in FINE_FIELDS}
             doc["created"] = datetime.utcnow().isoformat()
-            fines.insert_one(doc)
-            self._send(201, json.dumps({"ok": True}))
+            res = fines.insert_one(doc)
+            self._send(201, json.dumps({"ok": True, "id": str(res.inserted_id)}))
             return
         if urlparse(self.path).path == "/api/plates":
             n = int(self.headers.get("Content-Length", 0))
@@ -1055,8 +1240,13 @@ class Handler(BaseHTTPRequestHandler):
                             {"$pull": {"renewals": {"at": target.get("at")}}})
             self._send(200, json.dumps({"ok": True}))
             return
+        if len(parts) == 3 and parts[1] == "photos":
+            photos.delete_one({"_id": ObjectId(parts[2])})
+            self._send(200, json.dumps({"ok": True}))
+            return
         if len(parts) == 3 and parts[1] == "fines":
             fines.delete_one({"_id": ObjectId(parts[2])})
+            photos.delete_many({"fine_id": parts[2]})
             self._send(200, json.dumps({"ok": True}))
             return
         if len(parts) == 3 and parts[1] == "plates":
