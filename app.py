@@ -16,6 +16,15 @@ client = MongoClient(MONGO_URI)
 db = client["employee_tracker"]
 cars = db["cars"]
 plates = db["plates"]
+fines = db["fines"]
+
+FINE_FIELDS = ["date", "car", "plate", "violation_no", "driver", "amount"]
+
+
+def clean_fine(doc):
+    out = {f: str(doc.get(f, "")) for f in FINE_FIELDS}
+    out["id"] = str(doc["_id"])
+    return out
 
 FIELDS = ["make", "model", "plate", "year", "color", "serial",
           "insurance_expiry", "inspection_expiry", "reg_expiry",
@@ -253,14 +262,21 @@ table.mini th{color:var(--mut);font-weight:600}
 <body>
 <header>
   <h1 id="ttl"></h1>
-  <button onclick="openForm()" class="primary" id="bAdd"></button>
-  <button onclick="openWallet()" id="bWallet"></button>
-  <button onclick="printAll()" id="bPrint"></button>
-  <button onclick="testMail()" id="bMail"></button>
+  <span id="carBtns" style="display:contents">
+    <button onclick="openForm()" class="primary" id="bAdd"></button>
+    <button onclick="openWallet()" id="bWallet"></button>
+    <button onclick="printAll()" id="bPrint"></button>
+    <button onclick="testMail()" id="bMail"></button>
+  </span>
+  <span id="fineBtns" style="display:none">
+    <button onclick="openFine()" class="primary" id="bAddFine"></button>
+    <button onclick="printFines()" id="bPrintFines"></button>
+  </span>
+  <button onclick="switchView()" id="bView"></button>
   <button onclick="toggleLang()" id="bLang"></button>
 </header>
 
-<div class="wrap">
+<div class="wrap" id="carsView">
   <p class="sechead" id="fleetTtl"></p>
   <div class="stats" id="fleet"></div>
   <p class="sechead" id="dashTtl"></p>
@@ -278,6 +294,28 @@ table.mini th{color:var(--mut);font-weight:600}
     <select id="own" onchange="render()"></select>
   </div>
   <div class="tbl"><table><thead><tr id="head"></tr></thead><tbody id="body"></tbody></table></div>
+</div>
+
+<div class="wrap" id="finesView" style="display:none">
+  <p class="sechead" id="finesTtl"></p>
+  <div class="stats" id="fstats"></div>
+  <div class="tools">
+    <input id="fq" oninput="renderFines()">
+    <select id="fdrv" onchange="renderFines()"></select>
+    <select id="fyr" onchange="renderFines()"></select>
+  </div>
+  <div class="tbl"><table><thead><tr id="fhead"></tr></thead><tbody id="fbody"></tbody></table></div>
+</div>
+
+<div class="modal" id="fmodal">
+  <div class="box" style="max-width:520px">
+    <h2 id="fTitle2" style="margin:0;font-size:18px"></h2>
+    <div class="grid" id="fGrid"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="closeFine()" id="fCancel"></button>
+      <button onclick="saveFine()" class="primary" id="fSave"></button>
+    </div>
+  </div>
 </div>
 
 <div class="modal" id="wmodal">
@@ -329,6 +367,17 @@ const T = {
    storedCars:"السيارات المخزنة",ownerCount:"عدد الملاك",insurance:"التأمين",inspection:"الفحص الدوري",
    registration:"الاستمارة",carUnit:"سيارة",overdue:"منتهية",clear:"إلغاء التحديد",
    showing:"يعرض:",allGood:"لا يوجد شيء ينتهي قريباً ✅",
+   fines:"المخالفات",backCars:"السيارات",finesTtl:"سجل المخالفات المرورية",
+   addFine:"+ إضافة مخالفة",newFine:"مخالفة جديدة",editFine:"تعديل المخالفة",
+   fDate:"تاريخ المخالفة",fCar:"السيارة",fPlate:"اللوحة",fNo:"رقم المخالفة",
+   fDriver:"السائق",fAmount:"المبلغ (ريال)",pickCar:"— اختر من السيارات —",
+   manual:"— إدخال يدوي —",fSearch:"بحث برقم المخالفة أو السائق أو اللوحة...",
+   allDrivers:"كل السائقين",allYears:"كل السنوات",
+   fCount:"عدد المخالفات",fTotal:"إجمالي المبالغ",fYear:"مخالفات هذه السنة",
+   fYearAmt:"مبالغ هذه السنة",fDrivers:"عدد السائقين",
+   noFines:"لا توجد مخالفات مسجلة",confirmFine:"حذف هذه المخالفة؟",
+   repFines:"تقرير المخالفات المرورية",printFines:"طباعة المخالفات",
+   topDriver:"الأكثر مخالفات",byDriver:"حسب السائق",byCar:"حسب السيارة",
    wallet:"محفظة اللوحات",walletTtl:"محفظة اللوحات الرقمية",
    addPlate:"إضافة لوحة",platePH:"اكتب رقم اللوحة",
    noPlates:"لا توجد لوحات مسجلة",dupPlate:"هذه اللوحة مسجلة مسبقاً",
@@ -364,6 +413,17 @@ const T = {
    storedCars:"Stored cars",ownerCount:"Owners",insurance:"Insurance",inspection:"Inspection",
    registration:"Registration",carUnit:"cars",overdue:"expired",clear:"Clear",
    showing:"Showing:",allGood:"Nothing expiring soon ✅",
+   fines:"Fines",backCars:"Cars",finesTtl:"Traffic fines history",
+   addFine:"+ Add fine",newFine:"New fine",editFine:"Edit fine",
+   fDate:"Fine date",fCar:"Car",fPlate:"Plate",fNo:"Violation no.",
+   fDriver:"Driver",fAmount:"Amount (SAR)",pickCar:"— pick from cars —",
+   manual:"— manual entry —",fSearch:"Search by violation no., driver or plate...",
+   allDrivers:"All drivers",allYears:"All years",
+   fCount:"Fines",fTotal:"Total amount",fYear:"Fines this year",
+   fYearAmt:"Amount this year",fDrivers:"Drivers",
+   noFines:"No fines recorded",confirmFine:"Delete this fine?",
+   repFines:"Traffic fines report",printFines:"Print fines",
+   topDriver:"Most fines",byDriver:"By driver",byCar:"By car",
    wallet:"Plate wallet",walletTtl:"Digital plate wallet",
    addPlate:"Add plate",platePH:"Enter plate number",
    noPlates:"No plates saved",dupPlate:"This plate is already saved",
@@ -396,6 +456,10 @@ const FORMF=F.concat(["status"]);
 const DATES=["insurance_expiry","inspection_expiry","reg_expiry"];
 let lang=localStorage.getItem("lang")||"ar", data=[], editing=null, sortBy=null, sortDir=1;
 let focusDoc=null, renFor=null, lastRows=[], plates=[];
+let view="cars", fineList=[], editingFine=null, lastFines=[];
+const FCOLS=["date","car","plate","violation_no","driver","amount"];
+const FLBL={date:"fDate",car:"fCar",plate:"fPlate",violation_no:"fNo",
+            driver:"fDriver",amount:"fAmount"};
 const DOCLBL={insurance_expiry:"insurance",inspection_expiry:"inspection",reg_expiry:"registration"};
 const t=()=>T[lang];
 
@@ -419,6 +483,13 @@ function paint(){
  bClear.textContent=t().clear;
  bMail.textContent=t().mail;bPrint.textContent=t().printAll;
  bWallet.textContent=t().wallet;
+ bAddFine.textContent=t().addFine;bPrintFines.textContent=t().printFines;
+ finesTtl.textContent=t().finesTtl;fSave.textContent=t().save;
+ fCancel.textContent=t().cancel;fq.placeholder=t().fSearch;
+ bView.textContent=view==="cars"?t().fines:t().backCars;
+ ttl.textContent=view==="cars"?t().title:t().finesTtl;
+ fhead.innerHTML=FCOLS.map(f=>'<th onclick="fsort(\''+f+'\')">'+t()[FLBL[f]]+
+   '</th>').join('')+'<th>'+t().cols.actions+'</th>';
  q.placeholder=t().search;
  const fv=filt.value||'all';
  filt.innerHTML=['all','exp','soon','soon60','stored'].map(k=>
@@ -427,7 +498,18 @@ function paint(){
  owners();
  head.innerHTML=F.map(f=>'<th onclick="sort(\''+f+'\')">'+t().cols[f]+'</th>').join('')
    +'<th>'+t().cols.actions+'</th>';
- render();
+ render();renderFines();
+}
+
+function switchView(){
+ view=view==="cars"?"fines":"cars";
+ carsView.style.display=view==="cars"?"":"none";
+ finesView.style.display=view==="fines"?"":"none";
+ carBtns.style.display=view==="cars"?"contents":"none";
+ fineBtns.style.display=view==="fines"?"contents":"none";
+ bView.textContent=view==="cars"?t().fines:t().backCars;
+ ttl.textContent=view==="cars"?t().title:t().finesTtl;
+ if(view==="fines")renderFines();
 }
 
 function setFocus(f){focusDoc=(focusDoc===f?null:f);render();}
@@ -522,6 +604,7 @@ function openForm(id){
  modal.classList.add("on");
 }
 function money(n){return (Number(n)||0).toLocaleString("en-US",{maximumFractionDigits:2});}
+function num(v){const n=Number(String(v).replace(/,/g,""));return isNaN(n)?0:n;}
 
 function renTable(c){
  const r=c.renewals||[];
@@ -681,6 +764,140 @@ function printAll(){
    '<p class="tot"><b>'+t().grand+": "+money(tot)+' '+t().sar+'</b></p>');
 }
 
+
+let fSortBy=null, fSortDir=1;
+function fsort(f){fSortDir=fSortBy===f?-fSortDir:1;fSortBy=f;renderFines();}
+
+function fineFilters(){
+ const dv=fdrv.value||"", yv=fyr.value||"";
+ const drv=[...new Set(fineList.map(x=>x.driver).filter(Boolean))]
+   .sort((a,b)=>a.localeCompare(b,"ar"));
+ fdrv.innerHTML='<option value="">'+t().allDrivers+'</option>'+
+   drv.map(d=>'<option value="'+d+'">'+d+'</option>').join('');
+ fdrv.value=drv.includes(dv)?dv:"";
+ const yrs=[...new Set(fineList.map(x=>(x.date||"").slice(0,4)).filter(Boolean))]
+   .sort().reverse();
+ fyr.innerHTML='<option value="">'+t().allYears+'</option>'+
+   yrs.map(y=>'<option value="'+y+'">'+y+'</option>').join('');
+ fyr.value=yrs.includes(yv)?yv:"";
+}
+
+function renderFines(){
+ fineFilters();
+ const term=fq.value.trim().toLowerCase(), dv=fdrv.value, yv=fyr.value;
+ let rows=fineList.filter(x=>{
+   if(term&&!FCOLS.map(f=>x[f]).join(" ").toLowerCase().includes(term))return false;
+   if(dv&&x.driver!==dv)return false;
+   if(yv&&(x.date||"").slice(0,4)!==yv)return false;
+   return true;});
+
+ if(fSortBy)rows.sort((a,b)=>{
+   const x=a[fSortBy]||"",y=b[fSortBy]||"";
+   if(fSortBy==="amount")return (num(x)-num(y))*fSortDir;
+   return String(x).localeCompare(String(y),"ar",{numeric:true})*fSortDir;});
+ else rows.sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
+
+ const scope=fineList.filter(x=>(!dv||x.driver===dv));
+ const yr=String(new Date().getFullYear());
+ let tot=0,ytot=0,ycnt=0;
+ scope.forEach(x=>{const a=num(x.amount);tot+=a;
+   if((x.date||"").slice(0,4)===yr){ytot+=a;ycnt++;}});
+ const perDrv={};
+ scope.forEach(x=>{if(x.driver)perDrv[x.driver]=(perDrv[x.driver]||0)+1;});
+ const top=Object.entries(perDrv).sort((a,b)=>b[1]-a[1])[0];
+
+ fstats.innerHTML=
+  '<div class="stat"><b style="color:var(--acc)">'+scope.length+'</b><span>'+t().fCount+'</span></div>'+
+  '<div class="stat"><b style="color:var(--bad)">'+money(tot)+'</b><span>'+t().fTotal+' ('+t().sar+')</span></div>'+
+  '<div class="stat"><b style="color:var(--warn)">'+ycnt+'</b><span>'+t().fYear+'</span></div>'+
+  '<div class="stat"><b style="color:var(--warn)">'+money(ytot)+'</b><span>'+t().fYearAmt+' ('+t().sar+')</span></div>'+
+  '<div class="stat"><b style="color:var(--acc)">'+Object.keys(perDrv).length+'</b><span>'+t().fDrivers+'</span></div>'+
+  (top?'<div class="stat"><b style="color:var(--mut)">'+top[1]+'</b><span>'+t().topDriver+': '+top[0]+'</span></div>':'');
+
+ lastFines=rows;
+ fbody.innerHTML=rows.length?rows.map(x=>'<tr>'+FCOLS.map(f=>{
+   let v;
+   if(f==="amount")v=x[f]?money(x[f]):"—";
+   else if(f==="date")v='<span class="pill n">'+(x[f]||"—")+'</span>';
+   else v=x[f]||"—";
+   return '<td>'+v+'</td>';}).join('')+
+   '<td><div class="row-actions">'+
+   '<button onclick="openFine(\''+x.id+'\')">'+t().edit+'</button>'+
+   '<button class="danger" onclick="delFine(\''+x.id+'\')">'+t().del+'</button>'+
+   '</div></td></tr>').join(''):
+   '<tr><td colspan="7" style="text-align:center;color:var(--mut);padding:26px">'+
+   t().noFines+'</td></tr>';
+}
+
+function openFine(id){
+ editingFine=id||null;
+ const x=id?fineList.find(y=>y.id===id):{};
+ fTitle2.textContent=id?t().editFine:t().newFine;
+ const today=new Date().toISOString().slice(0,10);
+ const opts='<option value="">'+t().pickCar+'</option>'+
+   data.map(c=>'<option value="'+c.id+'">'+(c.make||"")+' '+(c.model||"")+
+   ' — '+(c.plate||"")+'</option>').join('');
+ fGrid.innerHTML=
+  '<div class="fld"><label>'+t().fDate+'</label><input id="n_date" type="date" value="'+
+   (x.date||today)+'"></div>'+
+  '<div class="fld"><label>'+t().fNo+'</label><input id="n_violation_no" type="text" value="'+
+   (x.violation_no||"").replace(/"/g,"&quot;")+'"></div>'+
+  '<div class="fld" style="grid-column:1/-1"><label>'+t().pickCar+
+   '</label><select id="n_pick" onchange="pickCar()">'+opts+'</select></div>'+
+  '<div class="fld"><label>'+t().fCar+'</label><input id="n_car" type="text" value="'+
+   (x.car||"").replace(/"/g,"&quot;")+'"></div>'+
+  '<div class="fld"><label>'+t().fPlate+'</label><input id="n_plate" type="text" value="'+
+   (x.plate||"").replace(/"/g,"&quot;")+'"></div>'+
+  '<div class="fld"><label>'+t().fDriver+'</label><input id="n_driver" type="text" value="'+
+   (x.driver||"").replace(/"/g,"&quot;")+'"></div>'+
+  '<div class="fld"><label>'+t().fAmount+'</label><input id="n_amount" type="number" min="0" step="any" value="'+
+   (x.amount||"")+'"></div>';
+ fmodal.classList.add("on");
+}
+
+function pickCar(){
+ const c=data.find(y=>y.id===n_pick.value);
+ if(!c)return;
+ n_car.value=((c.make||"")+" "+(c.model||"")).trim();
+ n_plate.value=c.plate||"";
+}
+
+function closeFine(){fmodal.classList.remove("on");editingFine=null;}
+
+async function saveFine(){
+ const p={};FCOLS.forEach(f=>{const el=document.getElementById("n_"+f);
+   if(el)p[f]=String(el.value||"").trim();});
+ await fetch("/api/fines"+(editingFine?"/"+editingFine:""),
+   {method:editingFine?"PUT":"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(p)});
+ closeFine();await loadFines();renderFines();
+}
+
+async function delFine(id){
+ if(!confirm(t().confirmFine))return;
+ await fetch("/api/fines/"+id,{method:"DELETE"});
+ await loadFines();renderFines();
+}
+
+function printFines(){
+ const rows=lastFines;
+ if(!rows.length){alert(t().noFines);return;}
+ let tot=0;rows.forEach(x=>tot+=num(x.amount));
+ const bits=[];
+ if(fdrv.value)bits.push(t().fDriver+": "+fdrv.value);
+ if(fyr.value)bits.push(fyr.value);
+ if(fq.value.trim())bits.push('"'+fq.value.trim()+'"');
+ const sub=t().repDate+": "+new Date().toISOString().slice(0,10)+
+   " | "+t().fCount+": "+rows.length+(bits.length?" | "+bits.join(" · "):"");
+ const body='<table class="p"><tr>'+
+   FCOLS.map(f=>'<th>'+t()[FLBL[f]]+'</th>').join('')+'</tr>'+
+   rows.map(x=>'<tr>'+FCOLS.map(f=>'<td>'+
+     (f==="amount"?(x[f]?money(x[f]):"—"):(x[f]||"—"))+'</td>').join('')+'</tr>').join('')+
+   '<tr><td colspan="5"><b>'+t().fTotal+'</b></td><td><b>'+money(tot)+' '+t().sar+'</b></td></tr>'+
+   '</table>';
+ openPrint(t().repFines,sub,body);
+}
+
 async function testMail(){
  bMail.disabled=true;const old=bMail.textContent;bMail.textContent="...";
  try{const r=await (await fetch("/api/send-digest")).json();
@@ -692,12 +909,17 @@ async function testMail(){
  bMail.disabled=false;bMail.textContent=old;
 }
 
+async function loadFines(){
+ try{fineList=await (await fetch("/api/fines")).json();}catch(e){fineList=[];}
+}
+
 async function load(){
  data=await (await fetch("/api/cars")).json();
- await loadPlates();owners();render();}
+ await loadPlates();await loadFines();owners();render();renderFines();}
 
 modal.addEventListener("click",e=>{if(e.target===modal)closeForm();});
 wmodal.addEventListener("click",e=>{if(e.target===wmodal)closeWallet();});
+fmodal.addEventListener("click",e=>{if(e.target===fmodal)closeFine();});
 wInput.addEventListener("keydown",e=>{if(e.key==="Enter")addPlate();});
 paint();load();
 </script>
@@ -728,6 +950,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 res = {"sent": False, "reason": str(e)}
             self._send(200, json.dumps(res, ensure_ascii=False))
+        elif path == "/api/fines":
+            docs = [clean_fine(d) for d in fines.find()]
+            docs.sort(key=lambda x: x["date"], reverse=True)
+            self._send(200, json.dumps(docs, ensure_ascii=False))
         elif path == "/api/plates":
             docs = [{"id": str(d["_id"]), "plate": d.get("plate", "")}
                     for d in plates.find()]
@@ -769,6 +995,14 @@ class Handler(BaseHTTPRequestHandler):
             cars.update_one({"_id": ObjectId(parts[2])}, upd)
             self._send(201, json.dumps({"ok": True}, ensure_ascii=False))
             return
+        if urlparse(self.path).path == "/api/fines":
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            doc = {f: str(body.get(f, "")).strip() for f in FINE_FIELDS}
+            doc["created"] = datetime.utcnow().isoformat()
+            fines.insert_one(doc)
+            self._send(201, json.dumps({"ok": True}))
+            return
         if urlparse(self.path).path == "/api/plates":
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
@@ -792,6 +1026,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         parts = urlparse(self.path).path.strip("/").split("/")
+        if len(parts) == 3 and parts[1] == "fines":
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            doc = {f: str(body.get(f, "")).strip() for f in FINE_FIELDS}
+            fines.update_one({"_id": ObjectId(parts[2])}, {"$set": doc})
+            self._send(200, json.dumps({"ok": True}))
+            return
         if len(parts) == 3 and parts[1] == "cars":
             cars.update_one({"_id": ObjectId(parts[2])}, {"$set": self._payload()})
             self._send(200, json.dumps({"ok": True}))
@@ -812,6 +1053,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             cars.update_one({"_id": ObjectId(parts[2])},
                             {"$pull": {"renewals": {"at": target.get("at")}}})
+            self._send(200, json.dumps({"ok": True}))
+            return
+        if len(parts) == 3 and parts[1] == "fines":
+            fines.delete_one({"_id": ObjectId(parts[2])})
             self._send(200, json.dumps({"ok": True}))
             return
         if len(parts) == 3 and parts[1] == "plates":
